@@ -3,9 +3,27 @@ const pool = require('../db');
 function createCrudRouter(tableName, columns) {
   const router = require('express').Router();
 
-  // GET all
+  // GET all with optional pagination (?page=1&limit=50)
   router.get('/', async (req, res) => {
     try {
+      const page = parseInt(req.query.page) || null;
+      const limit = parseInt(req.query.limit) || null;
+
+      if (page && limit) {
+        const offset = (page - 1) * limit;
+        const countResult = await pool.query(`SELECT COUNT(*) FROM ${tableName}`);
+        const total = parseInt(countResult.rows[0].count);
+        const totalPages = Math.ceil(total / limit);
+        const result = await pool.query(
+          `SELECT * FROM ${tableName} ORDER BY id DESC LIMIT $1 OFFSET $2`,
+          [limit, offset]
+        );
+        return res.json({
+          data: result.rows,
+          pagination: { page, limit, total, totalPages },
+        });
+      }
+
       const result = await pool.query(`SELECT * FROM ${tableName} ORDER BY id DESC`);
       res.json(result.rows);
     } catch (err) {

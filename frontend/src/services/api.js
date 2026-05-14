@@ -40,4 +40,7 @@ export const api = {
 
   // AI endpoints
   aiAnalyze: (endpoint) => request(`/ai/${endpoint}`, { method: 'POST' }),
+  aiClearCustoms: (id) => request(`/ai/customs/${id}/ai-clear`, { method: 'POST' }),
+  aiHistory: (page = 1, limit = 20) => request(`/ai/history?page=${page}&limit=${limit}`),
+  voyageDemurrage: (id) => request(`/ai/voyages/${id}/demurrage`),
 };

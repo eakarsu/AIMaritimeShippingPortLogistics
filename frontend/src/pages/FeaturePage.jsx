@@ -525,6 +525,8 @@ export default function FeaturePage({ feature }) {
   const config = featureConfig[feature];
   const navigate = useNavigate();
   const [data, setData] = useState([]);
+  const [pagination, setPagination] = useState(null);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(null);
@@ -533,26 +535,50 @@ export default function FeaturePage({ feature }) {
   const [formData, setFormData] = useState({});
   const [aiResult, setAiResult] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [customsClearing, setCustomsClearing] = useState(null);
+  const [customsClearResult, setCustomsClearResult] = useState({});
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    loadData();
     setSelected(null);
     setEditing(false);
     setCreating(false);
     setAiResult(null);
     setSearch('');
+    setPage(1);
+    setPagination(null);
   }, [feature]);
 
-  const loadData = async () => {
+  useEffect(() => {
+    loadData(page);
+  }, [feature, page]);
+
+  const loadData = async (p = 1) => {
     setLoading(true);
     try {
-      const result = await api.getAll(config.resource);
-      setData(result);
+      const result = await api.getAll(config.resource + `?page=${p}&limit=50`);
+      if (result && result.data && result.pagination) {
+        setData(result.data);
+        setPagination(result.pagination);
+      } else {
+        setData(Array.isArray(result) ? result : []);
+        setPagination(null);
+      }
     } catch (err) {
       console.error(err);
     }
     setLoading(false);
+  };
+
+  const handleAiClearCustoms = async (row) => {
+    setCustomsClearing(row.id);
+    try {
+      const result = await api.aiClearCustoms(row.id);
+      setCustomsClearResult(prev => ({ ...prev, [row.id]: result }));
+    } catch (err) {
+      setCustomsClearResult(prev => ({ ...prev, [row.id]: { error: err.message } }));
+    }
+    setCustomsClearing(null);
   };
 
   const filtered = useMemo(() => {
@@ -584,7 +610,7 @@ export default function FeaturePage({ feature }) {
     try {
       await api.delete(config.resource, selected.id);
       setSelected(null);
-      loadData();
+      loadData(page);
     } catch (err) {
       alert(err.message);
     }
@@ -612,7 +638,7 @@ export default function FeaturePage({ feature }) {
         setEditing(false);
         setSelected(null);
       }
-      loadData();
+      loadData(page);
     } catch (err) {
       alert(err.message);
     }
@@ -645,9 +671,12 @@ export default function FeaturePage({ feature }) {
       <div className="page-header">
         <div>
           <h1>{config.icon} {config.title}</h1>
-          <p>{data.length} records loaded</p>
+          <p>{pagination ? pagination.total : data.length} records</p>
         </div>
         <div className="table-actions">
+          <button className="btn btn-ghost" onClick={() => navigate('/ai-history')} style={{ fontSize: 13 }}>
+            📋 AI History
+          </button>
           <button className="btn btn-primary" onClick={handleCreate}>+ New Item</button>
           {config.aiEndpoint && (
             <button className="btn btn-success" onClick={handleAiAnalysis} disabled={aiLoading}>
@@ -679,30 +708,115 @@ export default function FeaturePage({ feature }) {
                   {config.columns.map(col => (
                     <th key={col}>{formatHeader(col)}</th>
                   ))}
+                  {feature === 'customs' && <th>AI Clear</th>}
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((row, i) => (
-                  <tr key={row.id} onClick={() => handleRowClick(row)}>
-                    <td>{i + 1}</td>
-                    {config.columns.map(col => (
-                      <td key={col}>
-                        {col === config.statusField || col === 'risk_level' || col === 'priority' || col === 'priority_level' || col === 'advisory_level' ? (
-                          <span className={getBadgeClass(row[col])}>{formatValue(row[col])}</span>
-                        ) : col === 'declared_value' || col === 'cost_usd' ? (
-                          row[col] ? `$${Number(row[col]).toLocaleString()}` : '—'
-                        ) : (
-                          formatValue(row[col])
-                        )}
-                      </td>
-                    ))}
-                  </tr>
+                  <React.Fragment key={row.id}>
+                    <tr onClick={() => handleRowClick(row)}>
+                      <td>{pagination ? (pagination.page - 1) * pagination.limit + i + 1 : i + 1}</td>
+                      {config.columns.map(col => (
+                        <td key={col}>
+                          {col === config.statusField || col === 'risk_level' || col === 'priority' || col === 'priority_level' || col === 'advisory_level' ? (
+                            <span className={getBadgeClass(row[col])}>{formatValue(row[col])}</span>
+                          ) : col === 'declared_value' || col === 'cost_usd' ? (
+                            row[col] ? `$${Number(row[col]).toLocaleString()}` : '—'
+                          ) : (
+                            formatValue(row[col])
+                          )}
+                        </td>
+                      ))}
+                      {feature === 'customs' && (
+                        <td onClick={e => e.stopPropagation()}>
+                          <button
+                            className="btn btn-sm btn-success"
+                            onClick={() => handleAiClearCustoms(row)}
+                            disabled={customsClearing === row.id}
+                            style={{ fontSize: 11 }}
+                          >
+                            {customsClearing === row.id ? '...' : '🤖 AI Clear'}
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                    {feature === 'customs' && customsClearResult[row.id] && (
+                      <tr>
+                        <td colSpan={config.columns.length + 2} style={{ padding: 0 }}>
+                          <div style={{
+                            background: '#f0fdf4',
+                            border: '1px solid #bbf7d0',
+                            borderRadius: 6,
+                            padding: '10px 14px',
+                            margin: '2px 4px',
+                            fontSize: 13,
+                          }}>
+                            {customsClearResult[row.id].error ? (
+                              <span style={{ color: 'red' }}>{customsClearResult[row.id].error}</span>
+                            ) : (
+                              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                                <div>
+                                  <strong>Risk Score:</strong>{' '}
+                                  <span style={{
+                                    background: customsClearResult[row.id].risk_score > 60 ? '#fee2e2' : customsClearResult[row.id].risk_score > 30 ? '#fef9c3' : '#dcfce7',
+                                    padding: '2px 8px',
+                                    borderRadius: 4,
+                                    fontWeight: 600,
+                                  }}>
+                                    {customsClearResult[row.id].risk_score ?? '—'}/100
+                                  </span>
+                                </div>
+                                <div>
+                                  <strong>Recommendation:</strong>{' '}
+                                  <span style={{ fontWeight: 600 }}>{customsClearResult[row.id].recommendation}</span>
+                                </div>
+                                {customsClearResult[row.id].required_documents?.length > 0 && (
+                                  <div>
+                                    <strong>Required Docs:</strong>{' '}
+                                    {customsClearResult[row.id].required_documents.join(', ')}
+                                  </div>
+                                )}
+                                {customsClearResult[row.id].notes && (
+                                  <div style={{ flexBasis: '100%' }}>
+                                    <strong>Notes:</strong> {customsClearResult[row.id].notes}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 ))}
                 {filtered.length === 0 && (
                   <tr><td colSpan={config.columns.length + 1} style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No records found</td></tr>
                 )}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Pagination Controls */}
+        {pagination && pagination.totalPages > 1 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 20px', justifyContent: 'flex-end', borderTop: '1px solid var(--border)' }}>
+            <button
+              className="btn btn-sm btn-ghost"
+              disabled={pagination.page <= 1}
+              onClick={() => setPage(p => p - 1)}
+            >
+              Prev
+            </button>
+            <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+              Page {pagination.page} of {pagination.totalPages} ({pagination.total} total)
+            </span>
+            <button
+              className="btn btn-sm btn-ghost"
+              disabled={pagination.page >= pagination.totalPages}
+              onClick={() => setPage(p => p + 1)}
+            >
+              Next
+            </button>
           </div>
         )}
       </div>
@@ -725,6 +839,56 @@ export default function FeaturePage({ feature }) {
             </div>
           ) : (
             <>
+              {/* Structured cards for container-optimization */}
+              {feature === 'containers' && aiResult?.structured && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12, padding: '0 0 16px' }}>
+                  <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 11, color: '#3b82f6', fontWeight: 600, marginBottom: 4 }}>YARD LAYOUT SCORE</div>
+                    <div style={{ fontSize: 28, fontWeight: 700 }}>{aiResult.structured.yard_layout_score ?? '—'}<span style={{ fontSize: 14 }}>/100</span></div>
+                  </div>
+                  <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 11, color: '#16a34a', fontWeight: 600, marginBottom: 4 }}>SPACE UTILIZATION</div>
+                    <div style={{ fontSize: 14 }}>Current: <strong>{aiResult.structured.space_utilization?.current_pct ?? '—'}%</strong> → Optimal: <strong>{aiResult.structured.space_utilization?.optimal_pct ?? '—'}%</strong></div>
+                  </div>
+                  {aiResult.structured.action_items?.length > 0 && (
+                    <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: 14, gridColumn: 'span 2' }}>
+                      <div style={{ fontSize: 11, color: '#d97706', fontWeight: 600, marginBottom: 6 }}>ACTION ITEMS</div>
+                      <ul style={{ margin: 0, paddingLeft: 18 }}>
+                        {aiResult.structured.action_items.map((a, i) => <li key={i} style={{ fontSize: 13, marginBottom: 2 }}>{a}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Structured cards for berth-scheduling */}
+              {feature === 'berths' && aiResult?.structured && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12, padding: '0 0 16px' }}>
+                  <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 11, color: '#3b82f6', fontWeight: 600, marginBottom: 4 }}>SCHEDULE EFFICIENCY</div>
+                    <div style={{ fontSize: 28, fontWeight: 700 }}>{aiResult.structured.schedule_efficiency_score ?? '—'}<span style={{ fontSize: 14 }}>/100</span></div>
+                  </div>
+                  {aiResult.structured.predicted_delays?.length > 0 && (
+                    <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 14 }}>
+                      <div style={{ fontSize: 11, color: '#dc2626', fontWeight: 600, marginBottom: 6 }}>PREDICTED DELAYS</div>
+                      {aiResult.structured.predicted_delays.map((d, i) => (
+                        <div key={i} style={{ fontSize: 13, marginBottom: 4 }}>
+                          <strong>{d.vessel}</strong>: {d.reason}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {aiResult.structured.action_items?.length > 0 && (
+                    <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: 14, gridColumn: 'span 2' }}>
+                      <div style={{ fontSize: 11, color: '#d97706', fontWeight: 600, marginBottom: 6 }}>ACTION ITEMS</div>
+                      <ul style={{ margin: 0, paddingLeft: 18 }}>
+                        {aiResult.structured.action_items.map((a, i) => <li key={i} style={{ fontSize: 13, marginBottom: 2 }}>{a}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="ai-content">
                 <Markdown>{aiResult.analysis}</Markdown>
               </div>

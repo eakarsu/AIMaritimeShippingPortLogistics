@@ -3,6 +3,8 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import FeaturePage from './pages/FeaturePage';
+import AIHistory from './pages/AIHistory';
+import AIToolsPage from './pages/AIToolsPage';
 import Layout from './components/Layout';
 
 export default function App() {
@@ -51,6 +53,8 @@ export default function App() {
         <Route path="/tariffs" element={<FeaturePage feature="tariffs" />} />
         <Route path="/tides" element={<FeaturePage feature="tides" />} />
         <Route path="/notices" element={<FeaturePage feature="notices" />} />
+        <Route path="/ai-history" element={<AIHistory />} />
+        <Route path="/ai-tools" element={<AIToolsPage />} />
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
     </Layout>
