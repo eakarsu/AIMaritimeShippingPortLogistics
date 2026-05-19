@@ -1,14 +1,28 @@
 const router = require('express').Router();
 const https = require('https');
 const pool = require('../db');
+const { aiRateLimiter } = require('../middleware/rateLimiter');
 
+// ============ STARTUP: Create ai_analyses table ============
+pool.query(`
+  CREATE TABLE IF NOT EXISTS ai_analyses (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER,
+    endpoint VARCHAR(100),
+    input_filters JSONB,
+    result JSONB,
+    created_at TIMESTAMP DEFAULT NOW()
+  )
+`).catch(err => console.error('Failed to create ai_analyses table:', err.message));
+
+// ============ HELPERS ============
 function callOpenRouter(prompt) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify({
-      model: process.env.OPENROUTER_MODEL || 'anthropic/claude-haiku-4.5',
+      model: process.env.OPENROUTER_MODEL || 'anthropic/claude-3-5-sonnet-20241022',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 2000,
-      temperature: 0.7
+      temperature: 0.7,
     });
 
     const options = {
@@ -19,8 +33,8 @@ function callOpenRouter(prompt) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
         'HTTP-Referer': 'http://localhost:3000',
-        'X-Title': 'Maritime Logistics AI'
-      }
+        'X-Title': 'Maritime Logistics AI',
+      },
     };
 
     const req = https.request(options, (res) => {
@@ -46,71 +60,138 @@ function callOpenRouter(prompt) {
   });
 }
 
-// Container Yard Optimization AI
-router.post('/container-optimization', async (req, res) => {
+function parseAIJson(text) {
+  try { return JSON.parse(text); } catch (e) {}
+  const s = text.replace(/```(?:json)?\n?/g, '').replace(/```/g, '').trim();
+  try { return JSON.parse(s); } catch (e) {}
+  const i = text.indexOf('{');
+  const j = text.lastIndexOf('}');
+  if (i !== -1 && j !== -1) {
+    try { return JSON.parse(text.slice(i, j + 1)); } catch (e) {}
+  }
+  return null;
+}
+
+function persistAnalysis(userId, endpoint, inputFilters, result) {
+  pool.query(
+    'INSERT INTO ai_analyses (user_id, endpoint, input_filters, result, created_at) VALUES ($1, $2, $3, $4, NOW())',
+    [userId, endpoint, JSON.stringify(inputFilters), JSON.stringify(result)]
+  ).catch(err => console.error('Failed to persist AI analysis:', err.message));
+}
+
+// ============ AI HISTORY ============
+router.get('/history', async (req, res) => {
   try {
-    const containers = await pool.query('SELECT * FROM containers ORDER BY id LIMIT 50');
-    const prompt = `You are an AI port logistics expert. Analyze these containers and provide optimization recommendations for yard layout.
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
+
+    const countResult = await pool.query(
+      'SELECT COUNT(*) FROM ai_analyses WHERE user_id = $1',
+      [req.user.id]
+    );
+    const total = parseInt(countResult.rows[0].count);
+    const totalPages = Math.ceil(total / limit);
+
+    const result = await pool.query(
+      'SELECT id, endpoint, input_filters, result, created_at FROM ai_analyses WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+      [req.user.id, limit, offset]
+    );
+
+    res.json({
+      data: result.rows,
+      pagination: { page, limit, total, totalPages },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ Container Yard Optimization AI ============
+router.post('/container-optimization', aiRateLimiter, async (req, res) => {
+  try {
+    const containers = await pool.query(
+      "SELECT * FROM containers WHERE status = 'active' OR status IS NULL ORDER BY id LIMIT 50"
+    );
+    const prompt = `You are an AI port logistics expert. Analyze these containers and provide optimization recommendations for yard layout. Respond with valid JSON only.
 
 CONTAINERS DATA:
 ${JSON.stringify(containers.rows, null, 2)}
 
-Provide a detailed analysis with:
-1. **Yard Layout Score** (0-100) - Current efficiency rating
-2. **Stacking Optimization** - Recommendations for container stacking order
-3. **Retrieval Efficiency** - How to minimize reshuffling moves
-4. **Hot Zone Identification** - Containers that need priority repositioning
-5. **Space Utilization** - Current vs optimal capacity usage
-6. **Action Items** - Specific, prioritized recommendations
-
-Format your response in clear sections with specific data-driven insights.`;
+Return a JSON object with exactly these fields:
+{
+  "yard_layout_score": <number 0-100>,
+  "stacking_optimization": "<string>",
+  "retrieval_efficiency": "<string>",
+  "hot_zones": ["<string>", ...],
+  "space_utilization": { "current_pct": <number>, "optimal_pct": <number> },
+  "action_items": ["<string>", ...],
+  "summary": "<string>"
+}`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
-      analysis: aiResponse.choices[0].message.content,
+    const rawText = aiResponse.choices[0].message.content;
+    const parsed = parseAIJson(rawText);
+
+    const responsePayload = {
+      analysis: rawText,
+      structured: parsed,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+
+    persistAnalysis(req.user.id, 'container-optimization', { count: containers.rows.length }, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Berth Scheduling AI
-router.post('/berth-scheduling', async (req, res) => {
+// ============ Berth Scheduling AI ============
+router.post('/berth-scheduling', aiRateLimiter, async (req, res) => {
   try {
-    const berths = await pool.query('SELECT * FROM berths ORDER BY arrival_time LIMIT 50');
-    const prompt = `You are an AI berth scheduling optimizer for a major port. Analyze the current berth schedule and provide optimization.
+    const berths = await pool.query(
+      "SELECT * FROM berths WHERE arrival_time >= NOW() - interval '7 days' ORDER BY arrival_time LIMIT 50"
+    );
+    const prompt = `You are an AI berth scheduling optimizer for a major port. Analyze the current berth schedule and provide optimization. Respond with valid JSON only.
 
 BERTH SCHEDULE DATA:
 ${JSON.stringify(berths.rows, null, 2)}
 
-Provide:
-1. **Schedule Efficiency Score** (0-100)
-2. **Conflict Detection** - Any overlapping or problematic bookings
-3. **Turnaround Optimization** - How to reduce vessel turnaround time
-4. **Tide Window Analysis** - Optimal scheduling considering tide-dependent vessels
-5. **Resource Allocation** - Crane and labor distribution recommendations
-6. **Predicted Delays** - Vessels at risk of delay and mitigation strategies
-7. **Action Items** - Specific scheduling changes recommended
-
-Be specific with berth numbers, vessel names, and timeframes.`;
+Return a JSON object with exactly these fields:
+{
+  "schedule_efficiency_score": <number 0-100>,
+  "conflicts": ["<string>", ...],
+  "turnaround_optimization": "<string>",
+  "tide_window_analysis": "<string>",
+  "resource_allocation": "<string>",
+  "predicted_delays": [{ "vessel": "<string>", "reason": "<string>", "mitigation": "<string>" }],
+  "action_items": ["<string>", ...],
+  "summary": "<string>"
+}`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
-      analysis: aiResponse.choices[0].message.content,
+    const rawText = aiResponse.choices[0].message.content;
+    const parsed = parseAIJson(rawText);
+
+    const responsePayload = {
+      analysis: rawText,
+      structured: parsed,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+
+    persistAnalysis(req.user.id, 'berth-scheduling', { count: berths.rows.length }, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Vessel Route Optimization AI
-router.post('/route-optimization', async (req, res) => {
+// ============ Vessel Route Optimization AI ============
+router.post('/route-optimization', aiRateLimiter, async (req, res) => {
   try {
     const vessels = await pool.query('SELECT * FROM vessels ORDER BY id LIMIT 50');
     const weather = await pool.query('SELECT * FROM weather_impact ORDER BY date DESC LIMIT 20');
@@ -134,51 +215,103 @@ Provide:
 Include specific coordinates, speed recommendations, and estimated savings.`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'route-optimization', {}, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Customs Pre-clearance AI
-router.post('/customs-analysis', async (req, res) => {
+// ============ Customs Pre-clearance AI ============
+router.post('/customs-analysis', aiRateLimiter, async (req, res) => {
   try {
-    const customs = await pool.query('SELECT * FROM customs ORDER BY id LIMIT 50');
-    const prompt = `You are an AI customs compliance and risk assessment specialist. Analyze these customs declarations for risk and pre-clearance optimization.
+    const customs = await pool.query(
+      "SELECT * FROM customs WHERE status NOT IN ('Cleared', 'Rejected') OR status IS NULL ORDER BY id LIMIT 50"
+    );
+    const prompt = `You are an AI customs compliance and risk assessment specialist. Analyze these customs declarations for risk and pre-clearance optimization. Respond with valid JSON only.
 
 CUSTOMS DECLARATIONS:
 ${JSON.stringify(customs.rows, null, 2)}
 
-Provide:
-1. **Risk Assessment Summary** - Overall risk profile of current declarations
-2. **High-Risk Flagging** - Declarations that need additional scrutiny and why
-3. **Document Completeness** - Missing or incomplete documentation
-4. **HS Code Verification** - Any potential misclassifications
-5. **Pre-clearance Eligibility** - Which shipments qualify for fast-track clearance
-6. **Compliance Score** (0-100) - Overall compliance rating
-7. **Recommended Actions** - Specific steps to expedite clearance
-
-Reference specific declaration numbers and provide actionable intelligence.`;
+Return a JSON object with exactly these fields:
+{
+  "compliance_score": <number 0-100>,
+  "risk_summary": "<string>",
+  "high_risk_declarations": [{ "id": <number>, "declaration_number": "<string>", "reason": "<string>" }],
+  "document_completeness": "<string>",
+  "hs_code_issues": ["<string>", ...],
+  "pre_clearance_eligible": ["<string>", ...],
+  "action_items": ["<string>", ...],
+  "summary": "<string>"
+}`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
-      analysis: aiResponse.choices[0].message.content,
+    const rawText = aiResponse.choices[0].message.content;
+    const parsed = parseAIJson(rawText);
+
+    const responsePayload = {
+      analysis: rawText,
+      structured: parsed,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+
+    persistAnalysis(req.user.id, 'customs-analysis', { count: customs.rows.length }, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Fuel Consumption Modeling AI
-router.post('/fuel-modeling', async (req, res) => {
+// ============ Customs AI Clear (per-declaration) ============
+router.post('/customs/:id/ai-clear', aiRateLimiter, async (req, res) => {
+  try {
+    const customsResult = await pool.query('SELECT * FROM customs WHERE id = $1', [req.params.id]);
+    if (customsResult.rows.length === 0) return res.status(404).json({ error: 'Customs declaration not found' });
+    const declaration = customsResult.rows[0];
+
+    const prompt = `You are a customs risk assessment AI. Analyze this customs declaration and provide a clearance recommendation. Respond with valid JSON only.
+
+DECLARATION:
+${JSON.stringify(declaration, null, 2)}
+
+Return a JSON object:
+{
+  "risk_score": <number 0-100, where 0=safe, 100=very high risk>,
+  "recommendation": "CLEAR" | "HOLD" | "INSPECT",
+  "risk_factors": ["<string>", ...],
+  "required_documents": ["<string>", ...],
+  "notes": "<string>"
+}`;
+
+    const aiResponse = await callOpenRouter(prompt);
+    const rawText = aiResponse.choices[0].message.content;
+    const parsed = parseAIJson(rawText);
+
+    if (parsed) {
+      await pool.query(
+        "UPDATE customs SET ai_status = $1 WHERE id = $2",
+        [JSON.stringify(parsed), req.params.id]
+      ).catch(() => {});
+    }
+
+    const response = parsed || { analysis: rawText };
+    persistAnalysis(req.user.id, 'customs-ai-clear', { declaration_id: req.params.id }, response);
+    res.json(response);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ Fuel Consumption Modeling AI ============
+router.post('/fuel-modeling', aiRateLimiter, async (req, res) => {
   try {
     const fuel = await pool.query('SELECT * FROM fuel_consumption ORDER BY id LIMIT 50');
     const prompt = `You are an AI fuel consumption modeling specialist for maritime vessels. Analyze fuel data and provide optimization recommendations.
@@ -199,19 +332,21 @@ Provide:
 Include specific tonnage figures, cost estimates, and percentage improvements.`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'fuel-modeling', {}, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Cargo Tracking AI
-router.post('/cargo-intelligence', async (req, res) => {
+// ============ Cargo Tracking AI ============
+router.post('/cargo-intelligence', aiRateLimiter, async (req, res) => {
   try {
     const cargo = await pool.query('SELECT * FROM cargo_tracking ORDER BY id LIMIT 50');
     const prompt = `You are an AI cargo logistics intelligence specialist. Analyze cargo tracking data for insights and optimization.
@@ -231,19 +366,21 @@ Provide:
 Reference specific tracking numbers and provide timeline estimates.`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'cargo-intelligence', {}, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Port Traffic Management AI
-router.post('/traffic-analysis', async (req, res) => {
+// ============ Port Traffic Management AI ============
+router.post('/traffic-analysis', aiRateLimiter, async (req, res) => {
   try {
     const traffic = await pool.query('SELECT * FROM port_traffic ORDER BY scheduled_time LIMIT 50');
     const prompt = `You are an AI port traffic management specialist. Analyze vessel traffic patterns and optimize port operations.
@@ -264,19 +401,21 @@ Provide:
 Include specific vessel names, times, and quantified improvements.`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'traffic-analysis', {}, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Weather Impact Analysis AI
-router.post('/weather-analysis', async (req, res) => {
+// ============ Weather Impact Analysis AI ============
+router.post('/weather-analysis', aiRateLimiter, async (req, res) => {
   try {
     const weather = await pool.query('SELECT * FROM weather_impact ORDER BY date DESC LIMIT 50');
     const berths = await pool.query('SELECT * FROM berths ORDER BY arrival_time LIMIT 30');
@@ -300,19 +439,21 @@ Provide:
 Be specific about wind speeds, wave heights, and their operational thresholds.`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'weather-analysis', {}, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Crew Management Analysis AI
-router.post('/crew-analysis', async (req, res) => {
+// ============ Crew Management Analysis AI ============
+router.post('/crew-analysis', aiRateLimiter, async (req, res) => {
   try {
     const crew = await pool.query('SELECT * FROM crew_management ORDER BY id LIMIT 50');
     const prompt = `You are an AI maritime crew management specialist. Analyze crew data to optimize scheduling, compliance, and workforce efficiency.
@@ -321,30 +462,30 @@ CREW MANAGEMENT DATA:
 ${JSON.stringify(crew.rows, null, 2)}
 
 Provide a detailed analysis with:
-1. **Crew Scheduling Efficiency** (0-100) - Overall scheduling effectiveness and coverage gaps
-2. **Certification Compliance** - Review of crew certifications, expiry dates, and renewal urgency; flag any non-compliant or soon-to-expire credentials (STCW, medical, flag-state endorsements)
-3. **Workload Distribution** - Identify over-worked and under-utilized crew members, watch hour compliance per MLC 2006, and fatigue risk assessment
-4. **Cost Optimization** - Crew cost analysis per vessel, overtime patterns, and recommendations to reduce labor expenses without compromising safety
-5. **Safety Compliance** - Manning level adequacy per Safe Manning Certificate, rest hour violations, and drug/alcohol testing compliance
-6. **Retention & Morale Indicators** - Turnover risk based on contract lengths, shore leave patterns, and crew rotation schedules
-7. **Action Items** - Specific, prioritized recommendations for immediate crew management improvements
-
-Reference specific crew members, vessels, and certification details where applicable.`;
+1. **Crew Scheduling Efficiency** (0-100)
+2. **Certification Compliance** - Review certifications, expiry dates, flag any non-compliant credentials
+3. **Workload Distribution** - Over-worked and under-utilized crew, fatigue risk
+4. **Cost Optimization** - Crew cost analysis, overtime patterns
+5. **Safety Compliance** - Manning levels, rest hour violations
+6. **Retention & Morale Indicators** - Turnover risk
+7. **Action Items** - Specific, prioritized recommendations`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'crew-analysis', {}, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Port Equipment Analysis AI
-router.post('/equipment-analysis', async (req, res) => {
+// ============ Port Equipment Analysis AI ============
+router.post('/equipment-analysis', aiRateLimiter, async (req, res) => {
   try {
     const equipment = await pool.query('SELECT * FROM port_equipment ORDER BY id LIMIT 50');
     const prompt = `You are an AI port equipment management specialist. Analyze equipment data to optimize utilization, maintenance, and capital planning.
@@ -353,30 +494,30 @@ PORT EQUIPMENT DATA:
 ${JSON.stringify(equipment.rows, null, 2)}
 
 Provide a detailed analysis with:
-1. **Equipment Utilization Score** (0-100) - Overall fleet utilization rate and efficiency rating
-2. **Maintenance Scheduling** - Review of maintenance logs, upcoming scheduled maintenance, overdue services, and recommended preventive maintenance windows to minimize operational disruption
-3. **Downtime Prediction** - Identify equipment at high risk of unplanned failure based on age, usage hours, maintenance history, and operational stress patterns
-4. **Capacity Optimization** - Analysis of equipment allocation across terminals, peak demand coverage, and recommendations for redeployment to balance workloads
-5. **Replacement Planning** - Equipment nearing end-of-life, cost-benefit analysis of repair vs replace, and capital expenditure forecasting for fleet renewal
-6. **Energy & Emissions** - Fuel/power consumption patterns per equipment type and opportunities for electrification or efficiency improvements
-7. **Action Items** - Specific, prioritized recommendations for equipment management improvements
-
-Reference specific equipment IDs, types, and locations where applicable.`;
+1. **Equipment Utilization Score** (0-100)
+2. **Maintenance Scheduling** - Upcoming scheduled maintenance, overdue services
+3. **Downtime Prediction** - Equipment at high risk of unplanned failure
+4. **Capacity Optimization** - Equipment allocation across terminals
+5. **Replacement Planning** - Equipment nearing end-of-life
+6. **Energy & Emissions** - Consumption patterns and electrification opportunities
+7. **Action Items** - Specific, prioritized recommendations`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'equipment-analysis', {}, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Invoice Analysis AI
-router.post('/invoice-analysis', async (req, res) => {
+// ============ Invoice Analysis AI ============
+router.post('/invoice-analysis', aiRateLimiter, async (req, res) => {
   try {
     const invoices = await pool.query('SELECT * FROM invoices ORDER BY id LIMIT 50');
     const prompt = `You are an AI maritime financial analysis specialist. Analyze invoice data to optimize revenue, collections, and client profitability.
@@ -385,30 +526,30 @@ INVOICES DATA:
 ${JSON.stringify(invoices.rows, null, 2)}
 
 Provide a detailed analysis with:
-1. **Revenue Health Score** (0-100) - Overall financial health based on invoice data
-2. **Revenue Trends** - Analysis of invoicing volume over time, seasonal patterns, growth or decline indicators, and revenue concentration risk across clients
-3. **Payment Delay Analysis** - Average days-to-payment by client, identification of chronic late payers, aging receivables breakdown (30/60/90+ days), and impact on cash flow
-4. **Outstanding Receivables** - Total outstanding amount, high-risk receivables likely to become bad debt, and recommended collection priority list
-5. **Client Profitability** - Revenue per client ranking, service cost allocation, margin analysis, and identification of unprofitable client relationships
-6. **Cost Optimization** - Billing efficiency, discount leakage, fee structure recommendations, and opportunities to increase revenue per transaction
-7. **Action Items** - Specific, prioritized recommendations for improving financial performance and collections
-
-Reference specific invoice numbers, client names, and monetary amounts where applicable.`;
+1. **Revenue Health Score** (0-100)
+2. **Revenue Trends** - Invoicing volume, seasonal patterns
+3. **Payment Delay Analysis** - Average days-to-payment, chronic late payers
+4. **Outstanding Receivables** - High-risk receivables, collection priority
+5. **Client Profitability** - Revenue per client ranking, margin analysis
+6. **Cost Optimization** - Billing efficiency, fee structure recommendations
+7. **Action Items** - Specific, prioritized recommendations`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'invoice-analysis', {}, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Incident Analysis AI
-router.post('/incident-analysis', async (req, res) => {
+// ============ Incident Analysis AI ============
+router.post('/incident-analysis', aiRateLimiter, async (req, res) => {
   try {
     const incidents = await pool.query('SELECT * FROM incidents ORDER BY id LIMIT 50');
     const prompt = `You are an AI maritime safety and incident analysis specialist. Analyze incident records to identify patterns, assess risks, and recommend prevention strategies.
@@ -417,30 +558,30 @@ INCIDENTS DATA:
 ${JSON.stringify(incidents.rows, null, 2)}
 
 Provide a detailed analysis with:
-1. **Safety Performance Score** (0-100) - Overall safety rating based on incident frequency, severity, and trends
-2. **Safety Patterns** - Classification of incidents by type (collision, grounding, cargo damage, personal injury, environmental spill, near-miss), frequency distribution, and correlation with operational conditions
-3. **Risk Area Identification** - Geographic hotspots, high-risk berths or terminals, hazardous cargo correlations, and time-of-day/shift patterns that elevate risk
-4. **Incident Trend Analysis** - Month-over-month and year-over-year trend lines, whether safety is improving or deteriorating, and leading indicator assessment
-5. **Root Cause Patterns** - Common root causes (human error, equipment failure, procedural gaps, environmental factors), systemic issues, and organizational contributing factors
-6. **Prevention Recommendations** - Specific preventive measures for each identified pattern, training needs, procedural changes, equipment upgrades, and investment priorities ranked by risk reduction impact
-7. **Action Items** - Immediate corrective actions, short-term improvements, and long-term safety culture recommendations
-
-Reference specific incident IDs, dates, locations, and severity levels where applicable.`;
+1. **Safety Performance Score** (0-100)
+2. **Safety Patterns** - Classification by type, frequency distribution
+3. **Risk Area Identification** - Geographic hotspots, high-risk berths
+4. **Incident Trend Analysis** - Month-over-month trends
+5. **Root Cause Patterns** - Common root causes, systemic issues
+6. **Prevention Recommendations** - Specific preventive measures
+7. **Action Items** - Immediate corrective actions`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'incident-analysis', {}, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Dock Inspection Analysis AI
-router.post('/inspection-analysis', async (req, res) => {
+// ============ Dock Inspection Analysis AI ============
+router.post('/inspection-analysis', aiRateLimiter, async (req, res) => {
   try {
     const inspections = await pool.query('SELECT * FROM dock_inspections ORDER BY id LIMIT 50');
     const prompt = `You are an AI maritime inspection and regulatory compliance specialist. Analyze dock inspection records to assess fleet compliance and identify risk areas.
@@ -449,30 +590,30 @@ DOCK INSPECTIONS DATA:
 ${JSON.stringify(inspections.rows, null, 2)}
 
 Provide a detailed analysis with:
-1. **Fleet Compliance Score** (0-100) - Overall compliance rating across all inspected vessels and facilities
-2. **Deficiency Patterns** - Most common deficiency categories (structural, safety equipment, fire protection, navigation, pollution prevention, ISM Code, ISPS Code), repeat offenders, and severity distribution
-3. **Inspection Schedule Optimization** - Analysis of inspection frequency, overdue inspections, risk-based scheduling recommendations, and resource allocation for inspection teams
-4. **Safety Ratings** - Vessel and dock safety rankings, comparison against Port State Control benchmarks, and identification of substandard vessels requiring detention consideration
-5. **Regulatory Risk Assessment** - Exposure to flag state and port state control detentions, upcoming regulatory changes (SOLAS, MARPOL, BWM Convention), and gap analysis against current compliance status
-6. **Trend Analysis** - Improvement or deterioration in compliance over time, effectiveness of corrective actions from previous inspections, and predictive risk scoring
-7. **Action Items** - Priority corrective actions, targeted inspection plans, training recommendations, and regulatory filing deadlines
-
-Reference specific inspection IDs, vessel names, deficiency codes, and dates where applicable.`;
+1. **Fleet Compliance Score** (0-100)
+2. **Deficiency Patterns** - Most common deficiency categories
+3. **Inspection Schedule Optimization** - Risk-based scheduling recommendations
+4. **Safety Ratings** - Vessel and dock safety rankings
+5. **Regulatory Risk Assessment** - Exposure to port state control detentions
+6. **Trend Analysis** - Improvement or deterioration in compliance over time
+7. **Action Items** - Priority corrective actions`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'inspection-analysis', {}, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Warehouse Analysis AI
-router.post('/warehouse-analysis', async (req, res) => {
+// ============ Warehouse Analysis AI ============
+router.post('/warehouse-analysis', aiRateLimiter, async (req, res) => {
   try {
     const warehouse = await pool.query('SELECT * FROM warehouse ORDER BY id LIMIT 50');
     const prompt = `You are an AI warehouse and inventory management specialist for maritime port operations. Analyze warehouse data to optimize storage, throughput, and inventory control.
@@ -481,30 +622,30 @@ WAREHOUSE DATA:
 ${JSON.stringify(warehouse.rows, null, 2)}
 
 Provide a detailed analysis with:
-1. **Space Utilization Score** (0-100) - Current warehouse capacity usage versus optimal levels, dead space identification, and density improvement opportunities
-2. **Inventory Turnover Analysis** - Turnover rates by product category, slow-moving and dead stock identification, dwell time analysis, and comparison against industry benchmarks for port warehousing
-3. **Storage Optimization** - Recommendations for slotting strategy, zone layout improvements, rack configuration, temperature-controlled area efficiency, and hazardous materials segregation compliance
-4. **Expiry Risk Assessment** - Perishable and time-sensitive cargo at risk of expiration, FIFO/FEFO compliance status, and alerts for goods approaching customs bond expiry or free storage period limits
-5. **Capacity Planning** - Demand forecasting based on vessel schedules, seasonal storage needs, expansion or consolidation recommendations, and contingency plans for peak periods
-6. **Operational Efficiency** - Pick/pack/ship cycle times, labor productivity metrics, equipment utilization within warehouse, and throughput bottleneck identification
-7. **Action Items** - Specific, prioritized recommendations for immediate warehouse improvements and long-term strategic changes
-
-Reference specific warehouse zones, product categories, and storage locations where applicable.`;
+1. **Space Utilization Score** (0-100)
+2. **Inventory Turnover Analysis** - Turnover rates, slow-moving stock
+3. **Storage Optimization** - Slotting strategy, zone layout improvements
+4. **Expiry Risk Assessment** - Perishable cargo at risk
+5. **Capacity Planning** - Demand forecasting, seasonal storage needs
+6. **Operational Efficiency** - Cycle times, labor productivity metrics
+7. **Action Items** - Specific, prioritized recommendations`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'warehouse-analysis', {}, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Voyage Analysis AI
-router.post('/voyage-analysis', async (req, res) => {
+// ============ Voyage Analysis AI ============
+router.post('/voyage-analysis', aiRateLimiter, async (req, res) => {
   try {
     const voyages = await pool.query('SELECT * FROM voyages ORDER BY id LIMIT 50');
     const prompt = `You are an AI maritime voyage performance and commercial analysis specialist. Analyze voyage data to optimize profitability, efficiency, and scheduling.
@@ -513,23 +654,155 @@ VOYAGES DATA:
 ${JSON.stringify(voyages.rows, null, 2)}
 
 Provide a detailed analysis with:
-1. **Voyage Profitability Score** (0-100) - Overall voyage portfolio profitability rating based on revenue, costs, and margins
-2. **Route Efficiency** - Analysis of distance vs time performance per route, port rotation optimization, ballast leg minimization, and comparison of actual vs planned routes
-3. **Schedule Adherence** - On-time performance metrics, delay frequency and causes, laytime and demurrage exposure, and schedule reliability scoring per trade lane
-4. **Cargo Utilization** - Load factor analysis per voyage, deadweight utilization, TEU/tonnage optimization, and identification of underperforming voyages with low cargo fill rates
-5. **Revenue Optimization** - Freight rate analysis per route, spot vs contract mix optimization, backhaul revenue opportunities, and recommendations for pricing strategy adjustments
-6. **Cost Breakdown** - Voyage cost components (bunker, port charges, canal fees, agency costs), cost-per-ton benchmarking, and identification of cost reduction opportunities
-7. **Action Items** - Specific, prioritized recommendations for improving voyage economics, scheduling, and commercial performance
-
-Reference specific voyage numbers, vessel names, routes, and financial figures where applicable.`;
+1. **Voyage Profitability Score** (0-100)
+2. **Route Efficiency** - Distance vs time performance per route
+3. **Schedule Adherence** - On-time performance, delay frequency
+4. **Cargo Utilization** - Load factor analysis, deadweight utilization
+5. **Revenue Optimization** - Freight rate analysis, backhaul opportunities
+6. **Cost Breakdown** - Voyage cost components, cost-per-ton benchmarking
+7. **Action Items** - Specific, prioritized recommendations`;
 
     const aiResponse = await callOpenRouter(prompt);
-    res.json({
+    const responsePayload = {
       analysis: aiResponse.choices[0].message.content,
       model: aiResponse.model,
       usage: aiResponse.usage,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+    };
+    persistAnalysis(req.user.id, 'voyage-analysis', {}, responsePayload);
+    res.json(responsePayload);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ Demurrage Calculator ============
+router.get('/voyages/:id/demurrage', async (req, res) => {
+  try {
+    const voyageResult = await pool.query('SELECT * FROM voyages WHERE id = $1', [req.params.id]);
+    if (voyageResult.rows.length === 0) return res.status(404).json({ error: 'Voyage not found' });
+    const voyage = voyageResult.rows[0];
+
+    // Fetch associated berth and invoice data
+    const berthResult = await pool.query(
+      'SELECT * FROM berths WHERE vessel_name = $1 ORDER BY id LIMIT 1',
+      [voyage.vessel_name]
+    ).catch(() => ({ rows: [] }));
+    const berth = berthResult.rows[0] || null;
+
+    const invoiceResult = await pool.query(
+      'SELECT * FROM invoices WHERE vessel_name = $1 ORDER BY id LIMIT 5',
+      [voyage.vessel_name]
+    ).catch(() => ({ rows: [] }));
+
+    // Calculate laytime
+    let laytimeUsedHours = 0;
+    let laytimeAllowedHours = 24; // default
+    let demurrageAmount = 0;
+
+    if (berth && berth.arrival_time && berth.departure_time) {
+      const arrival = new Date(berth.arrival_time);
+      const departure = new Date(berth.departure_time);
+      laytimeUsedHours = Math.max(0, (departure - arrival) / 3600000);
+    }
+
+    const prompt = `You are a maritime charter party expert and demurrage specialist. Analyze this voyage's laytime and demurrage situation.
+
+VOYAGE:
+${JSON.stringify(voyage, null, 2)}
+
+BERTH DATA:
+${JSON.stringify(berth, null, 2)}
+
+INVOICES:
+${JSON.stringify(invoiceResult.rows, null, 2)}
+
+CALCULATED LAYTIME USED: ${laytimeUsedHours.toFixed(2)} hours
+ASSUMED LAYTIME ALLOWED: ${laytimeAllowedHours} hours
+
+Provide a detailed explanation in charter party terms covering:
+1. Laytime calculation methodology
+2. Whether demurrage or dispatch applies
+3. Estimated demurrage rate if applicable
+4. Recommendations to avoid future demurrage
+5. Any despatch money owed if laytime was saved
+
+Be specific with hours, rates, and amounts.`;
+
+    const aiResponse = await callOpenRouter(prompt);
+    const responsePayload = {
+      voyage_id: req.params.id,
+      vessel_name: voyage.vessel_name,
+      laytime_used_hours: parseFloat(laytimeUsedHours.toFixed(2)),
+      laytime_allowed_hours: laytimeAllowedHours,
+      demurrage_amount: demurrageAmount,
+      ai_explanation: aiResponse.choices[0].message.content,
+      timestamp: new Date().toISOString(),
+    };
+
+    persistAnalysis(req.user.id, 'demurrage', { voyage_id: req.params.id }, responsePayload);
+    res.json(responsePayload);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ LIABILITY RISK ASSESSMENT ============
+router.post('/liability-risk-assessment', aiRateLimiter, async (req, res) => {
+  try {
+    const { vesselId, cargoType } = req.body;
+    let vessels = [];
+    let cargo = [];
+    let weather = [];
+    try { vessels = (await pool.query(vesselId ? 'SELECT * FROM vessels WHERE id = $1' : 'SELECT * FROM vessels ORDER BY id LIMIT 25', vesselId ? [vesselId] : [])).rows; } catch (e) {}
+    try { cargo = (await pool.query('SELECT * FROM cargo ORDER BY id LIMIT 30')).rows; } catch (e) {}
+    try { weather = (await pool.query('SELECT * FROM weather ORDER BY id DESC LIMIT 10')).rows; } catch (e) {}
+
+    const prompt = `You are a maritime insurance liability analyst. Score liability exposure given cargo type, vessel age/condition, and weather context.
+
+VESSELS: ${JSON.stringify(vessels).slice(0, 4000)}
+CARGO: ${JSON.stringify(cargo).slice(0, 4000)}
+RECENT WEATHER: ${JSON.stringify(weather).slice(0, 1500)}
+Cargo type filter: ${cargoType || 'all'}
+
+Return ONLY JSON: { liability_score (0-100), risk_level ("low"|"medium"|"high"|"critical"), top_risk_factors: [{factor, impact, mitigation}], coverage_recommendations: [], premium_outlook }`;
+
+    const aiResponse = await callOpenRouter(prompt);
+    const raw = aiResponse.choices[0].message.content;
+    const structured = parseAIJson(raw);
+    const responsePayload = { raw, structured, model: aiResponse.model, usage: aiResponse.usage, timestamp: new Date().toISOString() };
+    persistAnalysis(req.user.id, 'liability-risk-assessment', { vesselId: vesselId || null, cargoType: cargoType || null }, responsePayload);
+    res.json(responsePayload);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ ENVIRONMENTAL COMPLIANCE CHECKER ============
+router.post('/environmental-compliance-checker', aiRateLimiter, async (req, res) => {
+  try {
+    const { jurisdiction = 'IMO MARPOL' } = req.body;
+    let vessels = [];
+    let fuel = [];
+    let incidents = [];
+    try { vessels = (await pool.query('SELECT * FROM vessels ORDER BY id LIMIT 25')).rows; } catch (e) {}
+    try { fuel = (await pool.query('SELECT * FROM fuel ORDER BY id DESC LIMIT 30')).rows; } catch (e) {}
+    try { incidents = (await pool.query("SELECT * FROM incidents ORDER BY id DESC LIMIT 25")).rows; } catch (e) {}
+
+    const prompt = `You are an environmental compliance officer for maritime operations. Validate emissions, fuel handling, waste handling, and ballast water against ${jurisdiction}.
+
+VESSELS: ${JSON.stringify(vessels).slice(0, 3000)}
+FUEL/BUNKER: ${JSON.stringify(fuel).slice(0, 3000)}
+INCIDENTS: ${JSON.stringify(incidents).slice(0, 2000)}
+
+Return ONLY JSON: { compliance_score (0-100), violations: [{rule, severity, evidence, remediation}], at_risk_areas: [], recommended_audits: [], reporting_deadlines: [] }`;
+
+    const aiResponse = await callOpenRouter(prompt);
+    const raw = aiResponse.choices[0].message.content;
+    const structured = parseAIJson(raw);
+    const responsePayload = { raw, structured, model: aiResponse.model, usage: aiResponse.usage, timestamp: new Date().toISOString() };
+    persistAnalysis(req.user.id, 'environmental-compliance-checker', { jurisdiction }, responsePayload);
+    res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

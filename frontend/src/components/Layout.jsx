@@ -23,6 +23,9 @@ const navItems = [
   { path: '/tariffs', icon: '💲', label: 'Port Tariffs' },
   { path: '/tides', icon: '🌊', label: 'Tide Schedules' },
   { path: '/notices', icon: '📢', label: 'Port Notices' },
+  { path: '/ai-history', icon: '📋', label: 'AI History' },
+  { path: '/ai-tools', icon: '🧠', label: 'AI Tools' },
+  { path: '/custom-views', icon: '⚓', label: 'Port Views' },
 ];
 
 export default function Layout({ user, onLogout, children }) {
