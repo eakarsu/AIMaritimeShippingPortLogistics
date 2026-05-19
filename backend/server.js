@@ -42,6 +42,14 @@ app.use('/api/tides', authenticateToken, require('./routes/tides'));
 app.use('/api/notices', authenticateToken, require('./routes/notices'));
 app.use('/api/ai', authenticateToken, require('./routes/ai'));
 
+// Custom Views (Port Views) - mounted BEFORE 404/catch-all
+app.use('/api/custom-views', require('./routes/customViews'));
+
+// Health endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', service: 'maritime-logistics', timestamp: new Date().toISOString() });
+});
+
 // Serve frontend in production
 app.use(express.static(path.join(__dirname, '..', 'frontend', 'dist')));
 app.get('*', (req, res) => {

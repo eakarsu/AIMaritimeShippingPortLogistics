@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import FeaturePage from './pages/FeaturePage';
 import AIHistory from './pages/AIHistory';
 import AIToolsPage from './pages/AIToolsPage';
+import CustomViewsPage from './pages/CustomViewsPage';
 import Layout from './components/Layout';
 
 export default function App() {
@@ -55,6 +56,7 @@ export default function App() {
         <Route path="/notices" element={<FeaturePage feature="notices" />} />
         <Route path="/ai-history" element={<AIHistory />} />
         <Route path="/ai-tools" element={<AIToolsPage />} />
+        <Route path="/custom-views" element={<CustomViewsPage />} />
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
     </Layout>
