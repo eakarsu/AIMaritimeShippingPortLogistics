@@ -44,6 +44,7 @@ app.use('/api/ai', authenticateToken, require('./routes/ai'));
 
 // Custom Views (Port Views) - mounted BEFORE 404/catch-all
 app.use('/api/custom-views', require('./routes/customViews'));
+app.use('/api/reefer-plug-allocation', authenticateToken, require('./routes/reeferPlugAllocation'));
 
 // Health endpoint
 app.get('/api/health', (req, res) => {

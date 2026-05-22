@@ -26,6 +26,7 @@ const navItems = [
   { path: '/ai-history', icon: '📋', label: 'AI History' },
   { path: '/ai-tools', icon: '🧠', label: 'AI Tools' },
   { path: '/custom-views', icon: '⚓', label: 'Port Views' },
+  { path: '/reefer-plug-allocation', icon: '🔌', label: 'Reefer Plugs' },
 ];
 
 export default function Layout({ user, onLogout, children }) {

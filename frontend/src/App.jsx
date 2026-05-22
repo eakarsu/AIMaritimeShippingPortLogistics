@@ -6,7 +6,13 @@ import FeaturePage from './pages/FeaturePage';
 import AIHistory from './pages/AIHistory';
 import AIToolsPage from './pages/AIToolsPage';
 import CustomViewsPage from './pages/CustomViewsPage';
+import ReeferPlugAllocation from './pages/ReeferPlugAllocation';
 import Layout from './components/Layout';
+
+import CodexCustomVizFeature from './pages/CodexCustomVizFeature';
+import CodexOperationsFeature from './pages/CodexOperationsFeature';
+
+import TimelineView from './pages/TimelineView';
 
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem('token'));
@@ -33,6 +39,10 @@ export default function App() {
   return (
     <Layout user={user} onLogout={handleLogout}>
       <Routes>
+        <Route path="/insights/timeline" element={<TimelineView />} />
+        <Route path="/codex/custom-viz" element={<CodexCustomVizFeature />} />
+        <Route path="/codex/operations" element={<CodexOperationsFeature />} />
+
         <Route path="/" element={<Dashboard />} />
         <Route path="/containers" element={<FeaturePage feature="containers" />} />
         <Route path="/berths" element={<FeaturePage feature="berths" />} />
@@ -57,6 +67,7 @@ export default function App() {
         <Route path="/ai-history" element={<AIHistory />} />
         <Route path="/ai-tools" element={<AIToolsPage />} />
         <Route path="/custom-views" element={<CustomViewsPage />} />
+        <Route path="/reefer-plug-allocation" element={<ReeferPlugAllocation />} />
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
     </Layout>
