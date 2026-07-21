@@ -5,16 +5,20 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const authenticateToken = require('./middleware/auth');
+const { validateRuntime } = require('./governance/runtime');
+const governanceRouter = require('./governance/router');
+const { createProviderGate } = require('./governance/providerGate');
+
+validateRuntime();
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || 3001;
 
 app.use(helmet());
-app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
-  credentials: true,
-}));
+const allowedOrigins = String(process.env.CORS_ORIGINS || process.env.CLIENT_URL || 'http://localhost:5173').split(',').map((value) => value.trim()).filter(Boolean);
+app.use(cors({ origin:(origin,callback)=>!origin||allowedOrigins.includes(origin)?callback(null,true):callback(new Error('Origin not allowed by CORS')),credentials:true }));
 app.use(express.json());
+app.use(createProviderGate(['/api/ai','/api/agentic-customs-clearing','/api/port-optimization-stream','/api/incident-investigation','/api/supply-chain-coordination','/api/demurrage-prediction']));
 
 // Public auth routes (no token required)
 app.use('/api/auth', require('./routes/auth'));
@@ -45,6 +49,7 @@ app.use('/api/ai', authenticateToken, require('./routes/ai'));
 // Custom Views (Port Views) - mounted BEFORE 404/catch-all
 app.use('/api/custom-views', require('./routes/customViews'));
 app.use('/api/reefer-plug-allocation', authenticateToken, require('./routes/reeferPlugAllocation'));
+app.use('/api/governed-port-calls', governanceRouter);
 
 // Health endpoint
 app.get('/api/health', (req, res) => {
@@ -70,17 +75,4 @@ app.use('/api/incident-investigation', require('./routes/incident-investigation'
 app.use('/api/supply-chain-coordination', require('./routes/supply-chain-coordination'));
 app.use('/api/demurrage-prediction', require('./routes/demurrage-prediction'));
 
-// === Batch 05 Gaps & Frontend Mounts ===
-try { const _gap_liability_risk_assessment = require('./routes/gap-liability-risk-assessment'); app.use('/api/gap-liability-risk-assessment', _gap_liability_risk_assessment); } catch(e) { console.error('gap mount fail liability-risk-assessment:', e.message); }
-try { const _gap_piracy_threat_detector = require('./routes/gap-piracy-threat-detector'); app.use('/api/gap-piracy-threat-detector', _gap_piracy_threat_detector); } catch(e) { console.error('gap mount fail piracy-threat-detector:', e.message); }
-try { const _gap_environmental_compliance_checker = require('./routes/gap-environmental-compliance-checker'); app.use('/api/gap-environmental-compliance-checker', _gap_environmental_compliance_checker); } catch(e) { console.error('gap mount fail environmental-compliance-checker:', e.message); }
-try { const _gap_labor_demand_forecaster = require('./routes/gap-labor-demand-forecaster'); app.use('/api/gap-labor-demand-forecaster', _gap_labor_demand_forecaster); } catch(e) { console.error('gap mount fail labor-demand-forecaster:', e.message); }
-try { const _gap_real_time = require('./routes/gap-real-time'); app.use('/api/gap-real-time', _gap_real_time); } catch(e) { console.error('gap mount fail real-time:', e.message); }
-try { const _gap_electronic = require('./routes/gap-electronic'); app.use('/api/gap-electronic', _gap_electronic); } catch(e) { console.error('gap mount fail electronic:', e.message); }
-try { const _gap_shipper = require('./routes/gap-shipper'); app.use('/api/gap-shipper', _gap_shipper); } catch(e) { console.error('gap mount fail shipper:', e.message); }
-try { const _gap_insurance = require('./routes/gap-insurance'); app.use('/api/gap-insurance', _gap_insurance); } catch(e) { console.error('gap mount fail insurance:', e.message); }
-try { const _gap_labor = require('./routes/gap-labor'); app.use('/api/gap-labor', _gap_labor); } catch(e) { console.error('gap mount fail labor:', e.message); }
-try { const _gap_environmental = require('./routes/gap-environmental'); app.use('/api/gap-environmental', _gap_environmental); } catch(e) { console.error('gap mount fail environmental:', e.message); }
-try { const _gap_limited = require('./routes/gap-limited'); app.use('/api/gap-limited', _gap_limited); } catch(e) { console.error('gap mount fail limited:', e.message); }
-try { const _gap_webhooks = require('./routes/gap-webhooks'); app.use('/api/gap-webhooks', _gap_webhooks); } catch(e) { console.error('gap mount fail webhooks:', e.message); }
-// === End Batch 05 Mounts ===
+// Generated gap routes are quarantined: no mounts until durable provider contracts and acceptance tests exist.

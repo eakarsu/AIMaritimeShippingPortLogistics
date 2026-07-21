@@ -1,129 +1,32 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BACKEND_PORT="${BACKEND_PORT:-3001}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+CHILD_PIDS=()
 
-echo -e "${CYAN}"
-echo "╔══════════════════════════════════════════════════════╗"
-echo "║       🚢 Maritime AI Logistics Platform 🚢          ║"
-echo "║    Shipping & Port Operations Management System      ║"
-echo "╚══════════════════════════════════════════════════════╝"
-echo -e "${NC}"
-
-# Load env
-if [ ! -f .env ]; then
-  echo -e "${RED}Error: .env file not found. Please create it first.${NC}"
-  exit 1
-fi
-
-source <(grep -v '^#' .env | sed 's/^/export /')
-
-BACKEND_PORT=${BACKEND_PORT:-3001}
-FRONTEND_PORT=${FRONTEND_PORT:-3000}
-DB_NAME=${DB_NAME:-maritime_logistics}
-DB_USER=${DB_USER:-postgres}
-DB_HOST=${DB_HOST:-localhost}
-DB_PORT=${DB_PORT:-5432}
-
-# Function to kill processes on ports
-cleanup_ports() {
-  echo -e "${YELLOW}🧹 Cleaning up used ports...${NC}"
-  for port in $BACKEND_PORT $FRONTEND_PORT; do
-    PID=$(lsof -ti :$port 2>/dev/null || true)
-    if [ -n "$PID" ]; then
-      echo -e "  Killing process on port $port (PID: $PID)"
-      kill -9 $PID 2>/dev/null || true
-      sleep 1
-    fi
-  done
-  echo -e "${GREEN}✅ Ports cleaned${NC}"
-}
-
-# Cleanup on exit
-cleanup() {
-  echo -e "\n${YELLOW}🛑 Shutting down...${NC}"
-  if [ -n "$BACKEND_PID" ]; then kill $BACKEND_PID 2>/dev/null || true; fi
-  if [ -n "$FRONTEND_PID" ]; then kill $FRONTEND_PID 2>/dev/null || true; fi
-  cleanup_ports
-  echo -e "${GREEN}👋 Goodbye!${NC}"
-  exit 0
-}
-trap cleanup SIGINT SIGTERM
-
-# Clean ports first
-cleanup_ports
-
-# Check PostgreSQL
-echo -e "\n${BLUE}🐘 Checking PostgreSQL...${NC}"
-if ! command -v psql &> /dev/null; then
-  echo -e "${RED}PostgreSQL client not found. Please install PostgreSQL.${NC}"
-  exit 1
-fi
-
-if ! pg_isready -h $DB_HOST -p $DB_PORT -q 2>/dev/null; then
-  echo -e "${YELLOW}Starting PostgreSQL...${NC}"
-  if [[ "$OSTYPE" == "darwin"* ]]; then
-    brew services start postgresql@14 2>/dev/null || brew services start postgresql 2>/dev/null || true
-    sleep 2
+require_file() { [ -f "$1" ] || { echo "Missing required file: $1" >&2; exit 1; }; }
+require_dir() { [ -d "$1" ] || { echo "Missing dependencies: $1 (install explicitly before startup)" >&2; exit 1; }; }
+port_free() {
+  if command -v lsof >/dev/null 2>&1 && lsof -ti ":$1" >/dev/null 2>&1; then
+    echo "Port $1 is already in use; refusing to terminate another process." >&2
+    exit 1
   fi
-fi
+}
+cleanup() { for pid in "${CHILD_PIDS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null || true; done; }
+trap cleanup INT TERM EXIT
 
-# Create database if not exists
-echo -e "${BLUE}📦 Setting up database...${NC}"
-PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -tc "SELECT 1 FROM pg_database WHERE datname = '$DB_NAME'" 2>/dev/null | grep -q 1 || \
-  PGPASSWORD=$DB_PASSWORD createdb -h $DB_HOST -p $DB_PORT -U $DB_USER $DB_NAME 2>/dev/null || true
-echo -e "${GREEN}✅ Database ready${NC}"
+require_file "$PROJECT_DIR/.env"
+require_dir "$PROJECT_DIR/backend/node_modules"
+require_dir "$PROJECT_DIR/frontend/node_modules"
+port_free "$BACKEND_PORT"
+port_free "$FRONTEND_PORT"
 
-# Install dependencies
-echo -e "\n${BLUE}📦 Installing backend dependencies...${NC}"
-cd backend
-npm install --silent 2>/dev/null
-echo -e "${GREEN}✅ Backend dependencies installed${NC}"
+(cd "$PROJECT_DIR/backend" && BACKEND_PORT="$BACKEND_PORT" node server.js) &
+CHILD_PIDS+=("$!")
+(cd "$PROJECT_DIR/frontend" && npm run dev -- --port "$FRONTEND_PORT") &
+CHILD_PIDS+=("$!")
 
-echo -e "\n${BLUE}📦 Installing frontend dependencies...${NC}"
-cd ../frontend
-npm install --silent 2>/dev/null
-echo -e "${GREEN}✅ Frontend dependencies installed${NC}"
-cd ..
-
-# Seed database
-echo -e "\n${BLUE}🌱 Seeding database...${NC}"
-cd backend
-node seeds/seed.js
-cd ..
-
-# Start backend with nodemon (hot reload)
-echo -e "\n${BLUE}🚀 Starting backend (port $BACKEND_PORT) with hot reload...${NC}"
-cd backend
-npx nodemon server.js &
-BACKEND_PID=$!
-cd ..
-sleep 2
-
-# Start frontend with Vite (hot reload built-in)
-echo -e "${BLUE}🚀 Starting frontend (port $FRONTEND_PORT) with hot reload...${NC}"
-cd frontend
-npx vite --port $FRONTEND_PORT &
-FRONTEND_PID=$!
-cd ..
-
-echo -e "\n${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║          🎉 Application Started Successfully!       ║${NC}"
-echo -e "${GREEN}╠══════════════════════════════════════════════════════╣${NC}"
-echo -e "${GREEN}║  Frontend:  ${CYAN}http://localhost:$FRONTEND_PORT${GREEN}                 ║${NC}"
-echo -e "${GREEN}║  Backend:   ${CYAN}http://localhost:$BACKEND_PORT/api${GREEN}              ║${NC}"
-echo -e "${GREEN}║                                                      ║${NC}"
-echo -e "${GREEN}║  Login:     ${CYAN}admin@maritime.com / admin123${GREEN}          ║${NC}"
-echo -e "${GREEN}║                                                      ║${NC}"
-echo -e "${GREEN}║  Hot reload enabled - changes auto-refresh           ║${NC}"
-echo -e "${GREEN}║  Press Ctrl+C to stop                                ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
-
-# Wait for background processes
-wait
+echo "Maritime services started without installing, seeding, migrating, or reclaiming ports."
+wait "${CHILD_PIDS[@]}"

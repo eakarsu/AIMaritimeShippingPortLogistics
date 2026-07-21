@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 require('dotenv').config({ path: '../../.env' });
 
-if (!process.env.JWT_SECRET) {
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
   console.error('FATAL: JWT_SECRET environment variable is not set');
   process.exit(1);
 }
