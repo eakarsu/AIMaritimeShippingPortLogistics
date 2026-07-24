@@ -13,8 +13,8 @@ export default function Login({ onLogin }) {
       setEmail(creds.email);
       setPassword(creds.password);
     } catch (err) {
-      setEmail('admin@maritime.com');
-      setPassword('admin123');
+      setEmail(import.meta.env.VITE_DEMO_EMAIL || '');
+      setPassword(import.meta.env.VITE_DEMO_PASSWORD || '');
     }
   };
 
