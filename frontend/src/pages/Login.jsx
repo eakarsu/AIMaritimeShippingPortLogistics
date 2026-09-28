@@ -39,7 +39,7 @@ export default function Login({ onLogin }) {
         <p className="subtitle">Shipping & Port Logistics Platform</p>
 
         <button className="fill-btn" onClick={fillCredentials}>
-          Auto-fill Demo Credentials
+          Auto Fill Demo Credentials
         </button>
 
         {error && <div className="error-msg">{error}</div>}
