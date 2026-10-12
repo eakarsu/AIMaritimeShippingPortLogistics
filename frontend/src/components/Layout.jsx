@@ -1,3 +1,4 @@
+import AIReportLibrary from "./AIReportLibrary";
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 
@@ -60,7 +61,7 @@ export default function Layout({ user, onLogout, children }) {
           </div>
           <button className="logout-btn" onClick={onLogout}>Sign Out</button>
         </div>
-      </aside>
+      <AIReportLibrary /></aside>
       <main className="main-content">{children}</main>
     </div>
   );

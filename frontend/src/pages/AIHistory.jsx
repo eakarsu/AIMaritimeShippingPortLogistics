@@ -1,6 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../services/api';
+import AIReport, { readableLabel } from '../components/AIReport';
+
+function inputValue(value) {
+  if (value === null || value === undefined || value === '') return 'Not provided';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
 
 export default function AIHistory() {
   const navigate = useNavigate();
@@ -86,26 +94,20 @@ export default function AIHistory() {
                       {expanded === item.id && (
                         <tr>
                           <td colSpan={5}>
-                            <div style={{
-                              background: 'var(--surface)',
-                              border: '1px solid var(--border)',
-                              borderRadius: 8,
-                              padding: 16,
-                              margin: '4px 0',
-                              maxHeight: 400,
-                              overflowY: 'auto',
-                            }}>
-                              <strong>Input Filters:</strong>
-                              <pre style={{ fontSize: 12, marginBottom: 12 }}>
-                                {JSON.stringify(item.input_filters, null, 2)}
-                              </pre>
-                              <strong>Result:</strong>
-                              <pre style={{ fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                                {typeof item.result === 'object'
-                                  ? JSON.stringify(item.result, null, 2)
-                                  : item.result}
-                              </pre>
-                            </div>
+                            <section style={{ margin: '4px 0', padding: 16, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                              <h3 style={{ margin: '0 0 10px' }}>Request inputs</h3>
+                              {Object.keys(item.input_filters || {}).length ? (
+                                <dl className="ai-report-facts">
+                                  {Object.entries(item.input_filters).map(([key, value]) => (
+                                    <div key={key}>
+                                      <dt>{readableLabel(key)}</dt>
+                                      <dd style={{ fontSize: 14 }}>{inputValue(value)}</dd>
+                                    </div>
+                                  ))}
+                                </dl>
+                              ) : <p className="ai-muted">This analysis used the current records without additional filters.</p>}
+                              <AIReport response={item.result} title={readableLabel(item.endpoint)} />
+                            </section>
                           </td>
                         </tr>
                       )}

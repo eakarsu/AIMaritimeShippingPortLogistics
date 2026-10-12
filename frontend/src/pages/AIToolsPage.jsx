@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import NativeAIControls from "../components/NativeAIControls.jsx";
+import AIReport from '../components/AIReport.jsx';
+import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../services/api';
 
 const TOOLS = [
@@ -9,10 +11,36 @@ const TOOLS = [
     endpoint: '/ai/liability-risk-assessment',
     description: 'Combines vessels, cargo, and recent weather to produce a liability score and premium outlook.',
     fields: [
-      { key: 'vesselId', label: 'Vessel ID (optional)', type: 'text' },
+      { key: 'vesselId', label: 'Vessel ID (optional)', type: 'record-select' },
       { key: 'cargoSummary', label: 'Cargo Summary', type: 'textarea' },
       { key: 'jurisdiction', label: 'Jurisdiction', type: 'text', placeholder: 'e.g. IMO / MARPOL' },
       { key: 'context', label: 'Additional Context', type: 'textarea' },
+    ],
+    presets: [
+      {
+        name: 'Reefer transit',
+        values: {
+          cargoSummary: '48 refrigerated containers carrying temperature-controlled produce; declared cargo value USD 3.2 million.',
+          jurisdiction: 'IMO SOLAS and Hague-Visby Rules',
+          context: 'Illustrative North Atlantic transit in winter. Review weather exposure, refrigeration failure, cargo claims, and coverage assumptions before binding.',
+        },
+      },
+      {
+        name: 'Hazardous cargo',
+        values: {
+          cargoSummary: '12 tank containers of IMO Class 3 flammable liquid with complete dangerous-goods declarations and segregation records.',
+          jurisdiction: 'IMO IMDG Code and local port regulations',
+          context: 'Illustrative port call with a 16-hour berth window. Assess handling, pollution, crew, and third-party liability; identify evidence still required.',
+        },
+      },
+      {
+        name: 'Project shipment',
+        values: {
+          cargoSummary: 'Oversized wind-turbine components loaded as breakbulk cargo; estimated replacement value USD 8.5 million.',
+          jurisdiction: 'Hague-Visby Rules and charter-party terms',
+          context: 'Illustrative heavy-lift voyage with two transshipment points. Compare cargo damage, delay, stowage, and contractual allocation risks.',
+        },
+      },
     ],
   },
   {
@@ -28,6 +56,38 @@ const TOOLS = [
       { key: 'ballastWaterTreated', label: 'Ballast Water Treated', type: 'select', options: ['true', 'false'] },
       { key: 'description', label: 'Operational Description', type: 'textarea' },
     ],
+    presets: [
+      {
+        name: 'ECA arrival',
+        values: {
+          jurisdiction: 'IMO MARPOL Annex VI — North Sea ECA',
+          fuelType: 'Very low sulfur fuel oil (VLSFO)',
+          sulfurContentPct: '0.10',
+          ballastWaterTreated: 'true',
+          description: 'Illustrative inbound container vessel switching to compliant fuel before the ECA boundary; ballast-water treatment and bunker records are available for review.',
+        },
+      },
+      {
+        name: 'Bunker review',
+        values: {
+          jurisdiction: 'IMO MARPOL Annex VI — global sulfur cap',
+          fuelType: 'Heavy fuel oil used with an approved exhaust-gas cleaning system',
+          sulfurContentPct: '2.50',
+          ballastWaterTreated: 'true',
+          description: 'Illustrative scrubber-equipped vessel. Verify wash-water restrictions, fuel samples, bunker delivery notes, and equipment alarms before concluding compliance.',
+        },
+      },
+      {
+        name: 'Ballast audit',
+        values: {
+          jurisdiction: 'IMO Ballast Water Management Convention and MARPOL',
+          fuelType: 'Marine gas oil',
+          sulfurContentPct: '0.08',
+          ballastWaterTreated: 'false',
+          description: 'Illustrative ballast-system outage reported before discharge. Identify reporting duties, containment measures, evidence gaps, and authorized remediation steps.',
+        },
+      },
+    ],
   },
 ];
 
@@ -37,8 +97,34 @@ export default function AIToolsPage() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [vessels, setVessels] = useState([]);
+
+  useEffect(() => {
+    let activeRequest = true;
+    api.getAll('vessels?limit=50')
+      .then((response) => {
+        if (activeRequest) setVessels(Array.isArray(response) ? response : response.data || []);
+      })
+      .catch(() => {
+        if (activeRequest) setVessels([]);
+      });
+    return () => { activeRequest = false; };
+  }, []);
 
   const tool = TOOLS.find(t => t.key === active);
+  const presets = useMemo(() => tool.presets.map((preset, index) => ({
+    name: preset.name,
+    fill: () => {
+      const next = { ...preset.values };
+      if (tool.key === 'liability-risk-assessment' && vessels.length) {
+        next.vesselId = String(vessels[index % vessels.length].id);
+      }
+      setInputs(next);
+      setResult(null);
+      setError(null);
+      return { filled: Object.keys(next).length, manual: [] };
+    },
+  })), [tool, vessels]);
 
   const handleChange = (key, value) =>
     setInputs(prev => ({ ...prev, [key]: value }));
@@ -80,7 +166,7 @@ export default function AIToolsPage() {
   };
 
   return (
-    <div>
+    <NativeAIControls busy={loading} context="MaritimeShippingPortLogistics" presets={presets}><div>
       <div className="page-header">
         <div>
           <h1>🧠 AI Maritime Tools</h1>
@@ -118,15 +204,25 @@ export default function AIToolsPage() {
             <div className="form-group" key={field.key} style={{ marginBottom: 12 }}>
               <label style={{ display: 'block', marginBottom: 4, fontWeight: 600, fontSize: 13 }}>{field.label}</label>
               {field.type === 'textarea' ? (
-                <textarea
+                <textarea data-ai-field={field.key}
                   rows={4}
                   value={inputs[field.key] || ''}
                   onChange={e => handleChange(field.key, e.target.value)}
                   placeholder={field.placeholder || ''}
                   style={{ width: '100%' }}
                 />
+              ) : field.type === 'record-select' ? (
+                <select data-ai-field={field.key}
+                  value={inputs[field.key] || ''}
+                  onChange={e => handleChange(field.key, e.target.value)}
+                  disabled={!vessels.length}
+                  style={{ width: '100%' }}
+                >
+                  <option value="">{vessels.length ? 'Select an existing vessel…' : 'No vessel records available'}</option>
+                  {vessels.map(vessel => <option key={vessel.id} value={vessel.id}>{vessel.vessel_name || vessel.name || `Vessel ${vessel.id}`} · ID {vessel.id}</option>)}
+                </select>
               ) : field.type === 'select' ? (
-                <select
+                <select data-ai-field={field.key}
                   value={inputs[field.key] || ''}
                   onChange={e => handleChange(field.key, e.target.value)}
                   style={{ width: '100%' }}
@@ -135,7 +231,7 @@ export default function AIToolsPage() {
                   {field.options.map(o => <option key={o} value={o}>{o}</option>)}
                 </select>
               ) : (
-                <input
+                <input data-ai-field={field.key}
                   type={field.type || 'text'}
                   value={inputs[field.key] || ''}
                   onChange={e => handleChange(field.key, e.target.value)}
@@ -156,21 +252,13 @@ export default function AIToolsPage() {
           </button>
         </form>
 
-        {error && (
-          <div style={{ marginTop: 16, padding: 12, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', borderRadius: 6 }}>
-            {String(error)}
-          </div>
-        )}
-
-        {result && (
-          <div style={{ marginTop: 20, padding: 16, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8 }}>
-            <h3 style={{ marginBottom: 8 }}>Result</h3>
-            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontSize: 12 }}>
-              {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
-            </pre>
-          </div>
-        )}
+        <AIReport
+          response={result}
+          loading={loading}
+          error={error}
+          title={tool.label}
+        />
       </div>
-    </div>
+    </div></NativeAIControls>
   );
 }

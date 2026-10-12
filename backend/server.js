@@ -51,6 +51,14 @@ app.use('/api/custom-views', require('./routes/customViews'));
 app.use('/api/reefer-plug-allocation', authenticateToken, require('./routes/reeferPlugAllocation'));
 app.use('/api/governed-port-calls', governanceRouter);
 
+// Advisory AI reports only; native execution and approval routes stay unchanged.
+const aiWorkspaceSupport = require("./aiWorkspaceAdapters.cjs");
+const aiWorkspaceDatabase = require("./db.js");
+app.use('/api/report-workspace', require("./aiWorkspace.cjs").createAIWorkspaceRouter({
+  pool: aiWorkspaceDatabase, authenticateToken: require("./middleware/auth.js"),
+  aiRateLimiter: aiWorkspaceSupport.createWorkspaceLimiter(), features: require("./aiWorkspaceFeatures.json"),
+}));
+
 // Health endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'maritime-logistics', timestamp: new Date().toISOString() });
@@ -63,7 +71,6 @@ app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, '..', 'frontend', 'dist', 'index.html'));
   }
 });
-
 app.listen(PORT, () => {
   console.log(`🚢 Maritime Logistics API running on port ${PORT}`);
 });

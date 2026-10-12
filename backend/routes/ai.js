@@ -757,7 +757,7 @@ Be specific with hours, rates, and amounts.`;
 // ============ LIABILITY RISK ASSESSMENT ============
 router.post('/liability-risk-assessment', aiRateLimiter, async (req, res) => {
   try {
-    const { vesselId, cargoType } = req.body;
+    const { vesselId, cargoSummary = '', jurisdiction = '', context = '' } = req.body;
     let vessels = [];
     let cargo = [];
     let weather = [];
@@ -768,17 +768,25 @@ router.post('/liability-risk-assessment', aiRateLimiter, async (req, res) => {
     const prompt = `You are a maritime insurance liability analyst. Score liability exposure given cargo type, vessel age/condition, and weather context.
 
 VESSELS: ${JSON.stringify(vessels).slice(0, 4000)}
-CARGO: ${JSON.stringify(cargo).slice(0, 4000)}
+CARGO RECORDS: ${JSON.stringify(cargo).slice(0, 4000)}
 RECENT WEATHER: ${JSON.stringify(weather).slice(0, 1500)}
-Cargo type filter: ${cargoType || 'all'}
+USER-SUPPLIED CARGO SUMMARY: ${cargoSummary || 'Not provided'}
+JURISDICTION: ${jurisdiction || 'Not provided'}
+ADDITIONAL CONTEXT: ${context || 'Not provided'}
 
+Treat user-supplied text as unverified context. Identify missing evidence and do not invent vessel, cargo, weather, or policy facts.
 Return ONLY JSON: { liability_score (0-100), risk_level ("low"|"medium"|"high"|"critical"), top_risk_factors: [{factor, impact, mitigation}], coverage_recommendations: [], premium_outlook }`;
 
     const aiResponse = await callOpenRouter(prompt);
     const raw = aiResponse.choices[0].message.content;
     const structured = parseAIJson(raw);
     const responsePayload = { raw, structured, model: aiResponse.model, usage: aiResponse.usage, timestamp: new Date().toISOString() };
-    persistAnalysis(req.user.id, 'liability-risk-assessment', { vesselId: vesselId || null, cargoType: cargoType || null }, responsePayload);
+    persistAnalysis(req.user.id, 'liability-risk-assessment', {
+      vesselId: vesselId || null,
+      cargoSummary: cargoSummary || null,
+      jurisdiction: jurisdiction || null,
+      context: context || null,
+    }, responsePayload);
     res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -788,7 +796,13 @@ Return ONLY JSON: { liability_score (0-100), risk_level ("low"|"medium"|"high"|"
 // ============ ENVIRONMENTAL COMPLIANCE CHECKER ============
 router.post('/environmental-compliance-checker', aiRateLimiter, async (req, res) => {
   try {
-    const { jurisdiction = 'IMO MARPOL' } = req.body;
+    const {
+      jurisdiction = 'IMO MARPOL',
+      fuelType = '',
+      sulfurContentPct = '',
+      ballastWaterTreated = '',
+      description = '',
+    } = req.body;
     let vessels = [];
     let fuel = [];
     let incidents = [];
@@ -799,16 +813,27 @@ router.post('/environmental-compliance-checker', aiRateLimiter, async (req, res)
     const prompt = `You are an environmental compliance officer for maritime operations. Validate emissions, fuel handling, waste handling, and ballast water against ${jurisdiction}.
 
 VESSELS: ${JSON.stringify(vessels).slice(0, 3000)}
-FUEL/BUNKER: ${JSON.stringify(fuel).slice(0, 3000)}
+FUEL/BUNKER RECORDS: ${JSON.stringify(fuel).slice(0, 3000)}
 INCIDENTS: ${JSON.stringify(incidents).slice(0, 2000)}
+USER-SUPPLIED FUEL TYPE: ${fuelType || 'Not provided'}
+USER-SUPPLIED SULFUR CONTENT (%): ${sulfurContentPct === '' ? 'Not provided' : sulfurContentPct}
+USER-SUPPLIED BALLAST WATER TREATED: ${ballastWaterTreated === '' ? 'Not provided' : ballastWaterTreated}
+OPERATIONAL DESCRIPTION: ${description || 'Not provided'}
 
+Treat user-supplied text as unverified context. Identify missing evidence and do not invent measurements, records, approvals, or completed remediation.
 Return ONLY JSON: { compliance_score (0-100), violations: [{rule, severity, evidence, remediation}], at_risk_areas: [], recommended_audits: [], reporting_deadlines: [] }`;
 
     const aiResponse = await callOpenRouter(prompt);
     const raw = aiResponse.choices[0].message.content;
     const structured = parseAIJson(raw);
     const responsePayload = { raw, structured, model: aiResponse.model, usage: aiResponse.usage, timestamp: new Date().toISOString() };
-    persistAnalysis(req.user.id, 'environmental-compliance-checker', { jurisdiction }, responsePayload);
+    persistAnalysis(req.user.id, 'environmental-compliance-checker', {
+      jurisdiction,
+      fuelType: fuelType || null,
+      sulfurContentPct: sulfurContentPct === '' ? null : sulfurContentPct,
+      ballastWaterTreated: ballastWaterTreated === '' ? null : ballastWaterTreated,
+      description: description || null,
+    }, responsePayload);
     res.json(responsePayload);
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../services/api';
-import Markdown from 'react-markdown';
+import AIReport from '../components/AIReport';
 
 const featureConfig = {
   containers: {
@@ -754,34 +754,7 @@ export default function FeaturePage({ feature }) {
                             {customsClearResult[row.id].error ? (
                               <span style={{ color: 'red' }}>{customsClearResult[row.id].error}</span>
                             ) : (
-                              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                                <div>
-                                  <strong>Risk Score:</strong>{' '}
-                                  <span style={{
-                                    background: customsClearResult[row.id].risk_score > 60 ? '#fee2e2' : customsClearResult[row.id].risk_score > 30 ? '#fef9c3' : '#dcfce7',
-                                    padding: '2px 8px',
-                                    borderRadius: 4,
-                                    fontWeight: 600,
-                                  }}>
-                                    {customsClearResult[row.id].risk_score ?? '—'}/100
-                                  </span>
-                                </div>
-                                <div>
-                                  <strong>Recommendation:</strong>{' '}
-                                  <span style={{ fontWeight: 600 }}>{customsClearResult[row.id].recommendation}</span>
-                                </div>
-                                {customsClearResult[row.id].required_documents?.length > 0 && (
-                                  <div>
-                                    <strong>Required Docs:</strong>{' '}
-                                    {customsClearResult[row.id].required_documents.join(', ')}
-                                  </div>
-                                )}
-                                {customsClearResult[row.id].notes && (
-                                  <div style={{ flexBasis: '100%' }}>
-                                    <strong>Notes:</strong> {customsClearResult[row.id].notes}
-                                  </div>
-                                )}
-                              </div>
+                              <AIReport response={customsClearResult[row.id]} title={`Customs clearance · ${row.declaration_number || row.id}`} />
                             )}
                           </div>
                         </td>
@@ -828,77 +801,12 @@ export default function FeaturePage({ feature }) {
             <h3>🤖 {config.aiLabel}</h3>
             {aiResult && <button className="btn btn-sm btn-ghost" onClick={() => setAiResult(null)}>Dismiss</button>}
           </div>
-          {aiLoading ? (
-            <div className="ai-loading">
-              <div className="spinner" />
-              <p>AI is analyzing your data...</p>
-            </div>
-          ) : aiResult?.error ? (
-            <div className="ai-content">
-              <div className="error-msg">{aiResult.error}</div>
-            </div>
-          ) : (
-            <>
-              {/* Structured cards for container-optimization */}
-              {feature === 'containers' && aiResult?.structured && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12, padding: '0 0 16px' }}>
-                  <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: 14 }}>
-                    <div style={{ fontSize: 11, color: '#3b82f6', fontWeight: 600, marginBottom: 4 }}>YARD LAYOUT SCORE</div>
-                    <div style={{ fontSize: 28, fontWeight: 700 }}>{aiResult.structured.yard_layout_score ?? '—'}<span style={{ fontSize: 14 }}>/100</span></div>
-                  </div>
-                  <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: 14 }}>
-                    <div style={{ fontSize: 11, color: '#16a34a', fontWeight: 600, marginBottom: 4 }}>SPACE UTILIZATION</div>
-                    <div style={{ fontSize: 14 }}>Current: <strong>{aiResult.structured.space_utilization?.current_pct ?? '—'}%</strong> → Optimal: <strong>{aiResult.structured.space_utilization?.optimal_pct ?? '—'}%</strong></div>
-                  </div>
-                  {aiResult.structured.action_items?.length > 0 && (
-                    <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: 14, gridColumn: 'span 2' }}>
-                      <div style={{ fontSize: 11, color: '#d97706', fontWeight: 600, marginBottom: 6 }}>ACTION ITEMS</div>
-                      <ul style={{ margin: 0, paddingLeft: 18 }}>
-                        {aiResult.structured.action_items.map((a, i) => <li key={i} style={{ fontSize: 13, marginBottom: 2 }}>{a}</li>)}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Structured cards for berth-scheduling */}
-              {feature === 'berths' && aiResult?.structured && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12, padding: '0 0 16px' }}>
-                  <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: 14 }}>
-                    <div style={{ fontSize: 11, color: '#3b82f6', fontWeight: 600, marginBottom: 4 }}>SCHEDULE EFFICIENCY</div>
-                    <div style={{ fontSize: 28, fontWeight: 700 }}>{aiResult.structured.schedule_efficiency_score ?? '—'}<span style={{ fontSize: 14 }}>/100</span></div>
-                  </div>
-                  {aiResult.structured.predicted_delays?.length > 0 && (
-                    <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 14 }}>
-                      <div style={{ fontSize: 11, color: '#dc2626', fontWeight: 600, marginBottom: 6 }}>PREDICTED DELAYS</div>
-                      {aiResult.structured.predicted_delays.map((d, i) => (
-                        <div key={i} style={{ fontSize: 13, marginBottom: 4 }}>
-                          <strong>{d.vessel}</strong>: {d.reason}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {aiResult.structured.action_items?.length > 0 && (
-                    <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: 14, gridColumn: 'span 2' }}>
-                      <div style={{ fontSize: 11, color: '#d97706', fontWeight: 600, marginBottom: 6 }}>ACTION ITEMS</div>
-                      <ul style={{ margin: 0, paddingLeft: 18 }}>
-                        {aiResult.structured.action_items.map((a, i) => <li key={i} style={{ fontSize: 13, marginBottom: 2 }}>{a}</li>)}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="ai-content">
-                <Markdown>{aiResult.analysis}</Markdown>
-              </div>
-              <div className="ai-meta">
-                <span>Model: {aiResult.model}</span>
-                {aiResult.usage && <span>Tokens: {aiResult.usage.total_tokens?.toLocaleString()}</span>}
-                <span>Generated: {new Date(aiResult.timestamp).toLocaleString()}</span>
-              </div>
-            </>
-          )}
+          <AIReport
+            response={aiResult?.error ? null : aiResult}
+            loading={aiLoading}
+            error={aiResult?.error}
+            title={config.aiLabel}
+          />
         </div>
       )}
 
