@@ -25,6 +25,7 @@ app.use('/api/auth', require('./routes/auth'));
 
 // All other API routes require authentication
 app.use('/api/containers', authenticateToken, require('./routes/containers'));
+app.use('/api/fp-wave38c', require('./routes/fp-wave38c'));
 app.use('/api/berths', authenticateToken, require('./routes/berths'));
 app.use('/api/vessels', authenticateToken, require('./routes/vessels'));
 app.use('/api/customs', authenticateToken, require('./routes/customs'));
